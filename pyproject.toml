@@ -1,0 +1,52 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "openhop-txmesh-plugin"
+version = "0.1.0"
+description = "openHop plugin that mirrors a Companion identity to an MQTT collector, with an inbound send bridge"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "zfouts" }]
+keywords = ["meshcore", "openhop", "lora", "mesh", "mqtt", "observer"]
+
+dependencies = [
+  "openhop-core>=1.1.1,<2",
+  # >=2.0: loop_stop() from inside the network thread is only safe on 2.x;
+  # on 1.6.x it leaves the client permanently dead (second audit #2).
+  "paho-mqtt>=2.0",
+  "pynacl>=1.5",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.2.0",
+  "pytest-asyncio>=0.23.0",
+  "ruff>=0.6.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/zfouts/openhop-txmesh-plugin"
+
+[project.scripts]
+openhop-txmesh = "openhop_txmesh.main:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["openhop_txmesh*"]
+
+# The plugin manager discovers manifests under share/openhop/plugins/<id>/.
+[tool.setuptools.data-files]
+"share/openhop/plugins/txmesh.observer" = ["openhop-plugin.json", "config.default.json"]
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+addopts = "-q"
+testpaths = ["tests"]
+asyncio_mode = "auto"
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"

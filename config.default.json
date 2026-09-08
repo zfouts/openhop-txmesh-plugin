@@ -1,0 +1,19 @@
+{
+  "companion_host": "127.0.0.1",
+  "companion_port": 5001,
+  "node_name": "",
+  "host": "",
+  "port": 443,
+  "transport": "websockets",
+  "username": "",
+  "password": "",
+  "keepalive": 45,
+  "tls_enabled": true,
+  "tls_insecure": false,
+  "advert_dump": false,
+  "packets": false,
+  "log_level": "INFO",
+  "channels": [],
+  "state_dir": "",
+  "path_hash_bytes": 2
+}
