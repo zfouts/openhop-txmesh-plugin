@@ -27,6 +27,7 @@ import asyncio
 import contextlib
 import logging
 import struct
+import time
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Dict, List, Optional
 
@@ -36,6 +37,7 @@ from openhop_core.companion.constants import (
     CMD_GET_CONTACTS,
     CMD_SEND_CHANNEL_TXT_MSG,
     CMD_SET_CHANNEL,
+    CMD_SET_DEVICE_TIME,
     CMD_SET_PATH_HASH_MODE,
     CMD_SYNC_NEXT_MESSAGE,
     FRAME_INBOUND_PREFIX,
@@ -532,6 +534,26 @@ class CompanionClient:
             return None
         return frame[2:34].split(b"\x00")[0].decode("utf-8", errors="replace")
 
+    async def set_device_time(self, epoch: Optional[int] = None) -> bool:
+        """Push the host's clock to this companion identity (CMD_SET_DEVICE_TIME).
+
+        A companion identity has no RTC of its own -- like real companion
+        hardware, it starts at whatever it last had (often unset/epoch 0) and
+        stays there until a connecting client pushes real time, the same way
+        the official MeshCore app syncs a phone's clock to a companion on
+        every session. Without this, every message the identity composes
+        carries a bogus timestamp forever, even though the host process this
+        virtual companion runs in already knows the correct time.
+        """
+        secs = int(epoch if epoch is not None else time.time())
+        payload = bytes([CMD_SET_DEVICE_TIME]) + struct.pack("<I", secs)
+        async with self._command_lock:
+            try:
+                frame = await self._command(payload, expected={RESP_CODE_OK, 0x01})
+            except asyncio.TimeoutError:
+                return False
+        return bool(frame) and frame[0] == RESP_CODE_OK
+
     async def set_path_hash_mode(self, hash_bytes: int) -> bool:
         """Set how many bytes each hop hash occupies in paths this node builds.
 
@@ -564,9 +586,23 @@ class CompanionClient:
         return bool(frame) and frame[0] == RESP_CODE_OK
 
     async def send_channel_message(self, idx: int, text: str) -> bool:
-        """Transmit a channel text message as this companion (§6)."""
+        """Transmit a channel text message as this companion (§6).
+
+        The 4-byte field here is not a "let the server pick" sentinel: the
+        repeater only falls back to its own clock when this arg is Python
+        ``None`` (impossible to express in a wire frame), and otherwise packs
+        whatever it's given directly into the on-air packet. A literal 0 was
+        being sent, so every message this plugin ever sent carried an
+        epoch-0 timestamp forever, regardless of the companion identity's own
+        (separately synced, see set_device_time) clock -- this path never
+        consulted it.
+        """
         body = utf8_truncate(text, MAX_TEXT_BYTES)
-        payload = bytes([CMD_SEND_CHANNEL_TXT_MSG, 0, idx]) + struct.pack("<I", 0) + body
+        payload = (
+            bytes([CMD_SEND_CHANNEL_TXT_MSG, 0, idx])
+            + struct.pack("<I", int(time.time()))
+            + body
+        )
         async with self._command_lock:
             try:
                 frame = await self._command(payload)

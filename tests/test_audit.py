@@ -9,6 +9,7 @@ coercion (H1), the reconnect loop (M3/M4), and the companion handshake (M5).
 import asyncio
 import json
 import queue
+import struct
 import time
 from types import SimpleNamespace
 
@@ -527,6 +528,117 @@ def test_3f2_contact_walk_does_not_dereference_sentinel():
 
     asyncio.run(run())  # a TypeError here would be the F2 regression
 
+
+
+# ---------------------------------------------------------------- device clock
+
+
+def test_set_device_time_wire_layout():
+    from openhop_core.companion.constants import CMD_SET_DEVICE_TIME, RESP_CODE_OK
+
+    client = CompanionClient("127.0.0.1", 1)
+    sent = []
+
+    async def fake_write(payload): sent.append(payload)
+    client._write = fake_write
+
+    async def run():
+        await client._responses.put(bytes([RESP_CODE_OK]))
+        return await client.set_device_time(1788917678)
+
+    assert asyncio.run(run()) is True
+    frame = sent[0]
+    assert frame[0] == CMD_SET_DEVICE_TIME
+    assert struct.unpack("<I", frame[1:5])[0] == 1788917678
+    assert len(frame) == 5
+
+
+def test_set_device_time_defaults_to_now(monkeypatch):
+    from openhop_core.companion import constants as companion_constants
+
+    import openhop_txmesh.companion as companion_mod
+
+    monkeypatch.setattr(companion_mod.time, "time", lambda: 1700000000.5)
+
+    client = CompanionClient("127.0.0.1", 1)
+    sent = []
+
+    async def fake_write(payload): sent.append(payload)
+    client._write = fake_write
+
+    async def run():
+        await client._responses.put(bytes([companion_constants.RESP_CODE_OK]))
+        return await client.set_device_time()
+
+    assert asyncio.run(run()) is True
+    assert struct.unpack("<I", sent[0][1:5])[0] == 1700000000
+
+
+def test_clock_sync_runs_first_on_every_connect():
+    """A companion identity has no RTC of its own: without an explicit sync
+    on every connect, messages it composes carry a stale/epoch-0 timestamp
+    forever, even though the host process already knows the correct time."""
+    calls = []
+
+    class FakeClient:
+        on_connected = on_message = on_advert = on_raw_frame = None
+        def is_connected(self): return True
+        async def set_device_time(self): calls.append("time"); return True
+        async def set_path_hash_mode(self, b): calls.append("hash"); return True
+        async def set_channel(self, idx, name, secret): calls.append("chan"); return True
+        async def get_channel(self, idx): return None
+
+    pub = ObserverPublisher(FakeClient(), {"host": "", "username": "u", "node_name": "n",
+                                          "channels": [{"idx": 1, "name": "#bot"}]})
+    asyncio.run(pub.on_companion_connected())
+    assert calls[0] == "time"
+
+
+def test_clock_sync_failure_is_not_fatal():
+    """A fake client that has no set_device_time at all (older test doubles,
+    or a companion firmware that predates this command) must not break the
+    rest of the connect sequence."""
+    calls = []
+
+    class FakeClient:
+        on_connected = on_message = on_advert = on_raw_frame = None
+        def is_connected(self): return True
+        async def set_path_hash_mode(self, b): calls.append("hash"); return True
+        async def get_channel(self, idx): return None
+
+    pub = ObserverPublisher(FakeClient(), {"host": "", "username": "u", "node_name": "n"})
+    asyncio.run(pub.on_companion_connected())  # must not raise
+    assert calls == ["hash"]
+
+
+def test_send_channel_message_stamps_real_time_not_zero(monkeypatch):
+    """The repeater only substitutes its own clock for a Python ``None``
+    timestamp (impossible to express in a wire frame); a literal 0 is packed
+    into the on-air packet as-is. Sending a hardcoded 0 here meant every
+    outgoing message carried an epoch-0 timestamp forever, regardless of
+    whether the companion identity's own clock (set_device_time) was synced
+    -- this send path never consulted it either way."""
+    import openhop_txmesh.companion as companion_mod
+    from openhop_core.companion.constants import CMD_SEND_CHANNEL_TXT_MSG, RESP_CODE_OK
+
+    monkeypatch.setattr(companion_mod.time, "time", lambda: 1788917678.9)
+
+    client = CompanionClient("127.0.0.1", 1)
+    sent = []
+
+    async def fake_write(payload): sent.append(payload)
+    client._write = fake_write
+
+    async def run():
+        await client._responses.put(bytes([RESP_CODE_OK]))
+        return await client.send_channel_message(1, "hi")
+
+    assert asyncio.run(run()) is True
+    frame = sent[0]
+    assert frame[0] == CMD_SEND_CHANNEL_TXT_MSG
+    ts = struct.unpack("<I", frame[3:7])[0]
+    assert ts == 1788917678
+    assert ts != 0
 
 
 # ---------------------------------------------------------------- path hash width
