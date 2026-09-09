@@ -170,6 +170,18 @@ class ObserverPublisher:
         than a hand-built frame. A ``#`` name needs no secret (hashtag key);
         anything else must supply ``secret`` as hex.
         """
+        # A companion identity has no RTC of its own and starts unset (often
+        # epoch 0) until a connecting client pushes real time -- exactly what
+        # the official MeshCore app does to a phone-paired companion on every
+        # session. We're the only client this identity ever sees, so this has
+        # to happen here, first, before anything the identity might timestamp
+        # (a channel message, a self-advert) gets composed with a bogus clock.
+        try:
+            ok = await self.client.set_device_time()
+            logger.info("device clock sync -> %s", "ok" if ok else "REFUSED")
+        except Exception as exc:
+            logger.error("device clock sync failed: %s", exc)
+
         # Path hash width for packets this node originates. 2-byte hashes
         # (the default here) make hop paths unambiguous on a busy mesh, where
         # 1-byte hashes collide. Persisted by the companion, re-asserted on

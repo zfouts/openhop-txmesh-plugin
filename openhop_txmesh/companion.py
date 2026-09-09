@@ -27,6 +27,7 @@ import asyncio
 import contextlib
 import logging
 import struct
+import time
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Dict, List, Optional
 
@@ -36,6 +37,7 @@ from openhop_core.companion.constants import (
     CMD_GET_CONTACTS,
     CMD_SEND_CHANNEL_TXT_MSG,
     CMD_SET_CHANNEL,
+    CMD_SET_DEVICE_TIME,
     CMD_SET_PATH_HASH_MODE,
     CMD_SYNC_NEXT_MESSAGE,
     FRAME_INBOUND_PREFIX,
@@ -531,6 +533,26 @@ class CompanionClient:
         if not frame or frame[0] != RESP_CODE_CHANNEL_INFO or len(frame) < 3:
             return None
         return frame[2:34].split(b"\x00")[0].decode("utf-8", errors="replace")
+
+    async def set_device_time(self, epoch: Optional[int] = None) -> bool:
+        """Push the host's clock to this companion identity (CMD_SET_DEVICE_TIME).
+
+        A companion identity has no RTC of its own -- like real companion
+        hardware, it starts at whatever it last had (often unset/epoch 0) and
+        stays there until a connecting client pushes real time, the same way
+        the official MeshCore app syncs a phone's clock to a companion on
+        every session. Without this, every message the identity composes
+        carries a bogus timestamp forever, even though the host process this
+        virtual companion runs in already knows the correct time.
+        """
+        secs = int(epoch if epoch is not None else time.time())
+        payload = bytes([CMD_SET_DEVICE_TIME]) + struct.pack("<I", secs)
+        async with self._command_lock:
+            try:
+                frame = await self._command(payload, expected={RESP_CODE_OK, 0x01})
+            except asyncio.TimeoutError:
+                return False
+        return bool(frame) and frame[0] == RESP_CODE_OK
 
     async def set_path_hash_mode(self, hash_bytes: int) -> bool:
         """Set how many bytes each hop hash occupies in paths this node builds.
