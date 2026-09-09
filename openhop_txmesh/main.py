@@ -5,8 +5,14 @@ Runs as a supervised child process of the openHop Repeater plugin manager, or
 standalone for development. Config is layered, lowest precedence first:
 
     config.default.json  (shipped)
- -> --config FILE        (operator's, written by the plugin manager)
+ -> --config FILE        (operator's; under the plugin manager this defaults to
+                          $OPENHOP_PLUGIN_DATA/config.json, which the Plugins
+                          page edits)
  -> OPENHOP_TXMESH_*     (environment)
+
+The plugin manager starts the entrypoint with no arguments and sets
+OPENHOP_PLUGIN_DATA to the plugin's persistent data directory. That directory
+is also the default state_dir, so the boot counter survives restarts.
 
 The MQTT password is deliberately readable from the environment so an operator
 can keep it out of a config file the plugin manager may rewrite.
@@ -114,12 +120,36 @@ def _fold_tls(layer: Dict[str, Any], tls: Dict[str, Any]) -> Dict[str, Any]:
     return tls
 
 
+def _plugin_data_dir() -> Path | None:
+    """The plugin manager's per-plugin data directory, if we run under it."""
+    data = os.environ.get("OPENHOP_PLUGIN_DATA", "").strip()
+    return Path(data).expanduser() if data else None
+
+
+def _manager_config_path() -> str | None:
+    """$OPENHOP_PLUGIN_DATA/config.json when the manager has written one."""
+    data = _plugin_data_dir()
+    if data is None:
+        return None
+    candidate = data / "config.json"
+    return str(candidate) if candidate.is_file() else None
+
+
 def load_config(path: str | None) -> Dict[str, Any]:
-    """Layer defaults -> file -> env, folding TLS settings at each layer."""
+    """Layer defaults -> file -> env, folding TLS settings at each layer.
+
+    With no explicit path, the plugin manager's config.json is used when
+    present, so the settings saved from the repeater's Plugins page apply.
+    """
     tls: Dict[str, Any] = {"enabled": True, "insecure": False}
 
     config = _defaults()
     _fold_tls(config, tls)
+
+    if path is None:
+        path = _manager_config_path()
+        if path:
+            logger.info("using plugin manager config %s", path)
 
     if path:
         try:
@@ -134,6 +164,10 @@ def load_config(path: str | None) -> Dict[str, Any]:
     env_layer = _from_env({})
     _fold_tls(env_layer, tls)
     config.update(env_layer)
+
+    data_dir = _plugin_data_dir()
+    if not config.get("state_dir") and data_dir is not None:
+        config["state_dir"] = str(data_dir)
 
     config["tls"] = tls
     return config

@@ -5,9 +5,13 @@
 Settings are read in this order. Later ones win, key by key.
 
 1. Built-in defaults, shipped inside the plugin.
-2. Your config file: `openhop-txmesh --config /path/to/config.json`.
+2. Your config file: `openhop-txmesh --config /path/to/config.json`. Under
+   the openHop plugin manager there is no `--config`; the file is
+   `<plugin data dir>/config.json`, which the Plugins page settings form
+   writes, and `state_dir` defaults to that data directory.
 3. Environment variables: `OPENHOP_TXMESH_<KEY>`, with the key name in upper
-   case. For example, `OPENHOP_TXMESH_PASSWORD=secret` sets `password`.
+   case. For example, `OPENHOP_TXMESH_PASSWORD=secret` sets `password`. The
+   plugin manager passes the repeater's environment on to the plugin.
 
 A minimal file plus one environment variable for the password is a common
 setup.

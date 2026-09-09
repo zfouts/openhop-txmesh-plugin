@@ -2,7 +2,7 @@
   "schema": 1,
   "id": "txmesh.observer",
   "name": "txmesh Observer",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Mirrors an openHop Companion identity to an MQTT collector, with an inbound send bridge.",
   "runtime": {
     "type": "python",

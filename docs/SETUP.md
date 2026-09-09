@@ -70,9 +70,9 @@ You should see the usage text, including a `keygen` command.
 Installing from a downloaded wheel instead? Replace the second line with
 `/opt/openhop_txmesh/bin/pip install ./openhop_txmesh_plugin-*.whl`.
 
-Using the openHop plugin manager? Once the plugin is in the openHop catalogue
-you can install it from there and skip the systemd part of step 5, because the
-plugin manager runs it for you. The rest of this guide is the same.
+On openHop Repeater 1.1.4 or newer you do not need any of this: the
+repeater's Plugins page installs and runs the plugin for you. That path is
+[PLUGIN-MANAGER.md](PLUGIN-MANAGER.md). This guide is the manual install.
 
 ---
 

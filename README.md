@@ -30,7 +30,8 @@ more identity. No dedicated hardware, nothing to flash or keep updated.
 
 | | |
 |---|---|
-| [docs/SETUP.md](docs/SETUP.md) | Start here. Copy-and-paste setup from beginning to end, with what you should see after each step. |
+| [docs/PLUGIN-MANAGER.md](docs/PLUGIN-MANAGER.md) | Start here on openHop 1.1.4 or newer. Install and run it from the repeater's Plugins page. |
+| [docs/SETUP.md](docs/SETUP.md) | Manual install for older repeaters or a separate machine. Copy-and-paste setup from beginning to end, with what you should see after each step. |
 | [docs/CONFIGURATION.md](docs/CONFIGURATION.md) | Every setting, its default, and its environment variable. |
 | [docs/OPERATIONS.md](docs/OPERATIONS.md) | What it publishes, privacy, transmit limits, troubleshooting, and how to shut a node down cleanly. |
 
@@ -64,6 +65,14 @@ phone app cannot use that companion. Give the gateway its own.
 
 This is the short version. [docs/SETUP.md](docs/SETUP.md) has the full
 walkthrough.
+
+On openHop Repeater 1.1.4 or newer, use the Plugins page in the web UI:
+upload the wheel from the
+[latest release](https://github.com/zfouts/openhop-txmesh-plugin/releases),
+fill in the settings, and enable it. The plugin manager runs it, restarts it,
+keeps its settings, and shows its log. The walkthrough is
+[docs/PLUGIN-MANAGER.md](docs/PLUGIN-MANAGER.md). What follows is the manual
+install for older repeaters or for running the plugin on another machine.
 
 ```bash
 python3 -m venv /opt/openhop_txmesh
