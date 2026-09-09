@@ -586,9 +586,23 @@ class CompanionClient:
         return bool(frame) and frame[0] == RESP_CODE_OK
 
     async def send_channel_message(self, idx: int, text: str) -> bool:
-        """Transmit a channel text message as this companion (§6)."""
+        """Transmit a channel text message as this companion (§6).
+
+        The 4-byte field here is not a "let the server pick" sentinel: the
+        repeater only falls back to its own clock when this arg is Python
+        ``None`` (impossible to express in a wire frame), and otherwise packs
+        whatever it's given directly into the on-air packet. A literal 0 was
+        being sent, so every message this plugin ever sent carried an
+        epoch-0 timestamp forever, regardless of the companion identity's own
+        (separately synced, see set_device_time) clock -- this path never
+        consulted it.
+        """
         body = utf8_truncate(text, MAX_TEXT_BYTES)
-        payload = bytes([CMD_SEND_CHANNEL_TXT_MSG, 0, idx]) + struct.pack("<I", 0) + body
+        payload = (
+            bytes([CMD_SEND_CHANNEL_TXT_MSG, 0, idx])
+            + struct.pack("<I", int(time.time()))
+            + body
+        )
         async with self._command_lock:
             try:
                 frame = await self._command(payload)

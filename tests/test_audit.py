@@ -611,6 +611,36 @@ def test_clock_sync_failure_is_not_fatal():
     assert calls == ["hash"]
 
 
+def test_send_channel_message_stamps_real_time_not_zero(monkeypatch):
+    """The repeater only substitutes its own clock for a Python ``None``
+    timestamp (impossible to express in a wire frame); a literal 0 is packed
+    into the on-air packet as-is. Sending a hardcoded 0 here meant every
+    outgoing message carried an epoch-0 timestamp forever, regardless of
+    whether the companion identity's own clock (set_device_time) was synced
+    -- this send path never consulted it either way."""
+    import openhop_txmesh.companion as companion_mod
+    from openhop_core.companion.constants import CMD_SEND_CHANNEL_TXT_MSG, RESP_CODE_OK
+
+    monkeypatch.setattr(companion_mod.time, "time", lambda: 1788917678.9)
+
+    client = CompanionClient("127.0.0.1", 1)
+    sent = []
+
+    async def fake_write(payload): sent.append(payload)
+    client._write = fake_write
+
+    async def run():
+        await client._responses.put(bytes([RESP_CODE_OK]))
+        return await client.send_channel_message(1, "hi")
+
+    assert asyncio.run(run()) is True
+    frame = sent[0]
+    assert frame[0] == CMD_SEND_CHANNEL_TXT_MSG
+    ts = struct.unpack("<I", frame[3:7])[0]
+    assert ts == 1788917678
+    assert ts != 0
+
+
 # ---------------------------------------------------------------- path hash width
 
 
