@@ -15,6 +15,7 @@ wrong value is worse for a collector than a missing one.
 from __future__ import annotations
 
 import asyncio
+from collections import deque
 import json
 import logging
 import os
@@ -45,6 +46,12 @@ from .format import (
     build_contact,
     build_dm,
     build_heard,
+    channel_hash_byte,
+    decode_frame_header,
+    PAYLOAD_TYPE_GRP_TXT,
+    PAYLOAD_TYPE_TXT_MSG,
+    CIPHER_MAC,
+    text_cipher_lengths,
     build_packet,
     build_sensors,
     build_telemetry,
@@ -64,6 +71,12 @@ logger = logging.getLogger("txmesh.publisher")
 # heard/ publishes the 16 most recent (§5.4); the surplus is headroom for the
 # roster fallback before the contact table has been walked.
 _ADVERT_CACHE_MAX = 512
+
+# Text frames heard on air, kept until the companion hands over the decoded
+# message so its hop path can be attached (see on_message). A frame the node
+# could not decrypt is never claimed, so the deque is bounded by count and age.
+_TEXT_FRAME_MAX = 64
+_TEXT_FRAME_MAX_AGE_S = 30.0
 
 
 class _Slot:
@@ -95,6 +108,9 @@ class ObserverPublisher:
         self._adverts: Dict[str, dict] = {}
         self._channels: Dict[int, _Slot] = {}
         self._contacts: List[dict] = []
+        self._text_frames: "deque[dict]" = deque()
+        # slot idx -> the channel-hash byte its GRP_TXT payloads start with
+        self._channel_hashes: Dict[int, int] = {}
 
         self._start_time = time.time()
         self._rx = 0
@@ -206,6 +222,7 @@ class ObserverPublisher:
                 name = str(entry["name"])
                 secret_hex = entry.get("secret")
                 secret = bytes.fromhex(secret_hex) if secret_hex else hashtag_secret(name)
+                self._channel_hashes[idx] = channel_hash_byte(secret)
                 ok = await self.client.set_channel(idx, name, secret)
                 logger.info("channel slot %s = %r -> %s", idx, name, "ok" if ok else "REFUSED")
             except Exception as exc:
@@ -227,11 +244,15 @@ class ObserverPublisher:
     async def on_message(self, msg: Message) -> None:
         """Mirror a decoded message (§5.5)."""
         try:
-            # The on-wire path_len encodes the hop count in its low 6 bits
-            # (0xFF means direct/unknown). The hop *hashes* are not carried on
-            # this path, so hops_n is reported without hops -- which §4 allows,
-            # and which is honest rather than inventing a chain.
+            # The sync response carries only path_len: the hop count in its
+            # low 6 bits (0xFF means direct/unknown), no hashes. The hashes
+            # were in the raw frame the radio logged moments earlier, so that
+            # frame is looked up and its path attached. txme.sh's !path bot
+            # needs the chain to trace anything; without it the request looks
+            # direct and the bot stays silent. When no frame can be claimed
+            # with confidence, hops_n alone is published (§4 allows it).
             hops_n = 0 if msg.path_len in (0, 0xFF) else msg.path_len & 0x3F
+            frame = self._claim_text_frame(msg)
             # The V3 frame carries SNR as a signed byte where 0 encodes both
             # "0.0 dB" and "not set". openhop_core does populate it for
             # messages that carry RF metadata, but a pre-v3 peer or a message
@@ -241,12 +262,14 @@ class ObserverPublisher:
                 "message_text": msg.text,
                 "timestamp": msg.timestamp,
                 "network_info": {"snr": msg.snr if msg.snr else None},
-                "path": None,
+                "path": frame["path"] if frame else None,
+                "hash_size": frame["hash_size"] if frame else None,
             }
             if msg.channel_idx is None:
                 event["contact_name"] = self._contact_name(msg.sender_prefix)
                 payload = build_dm(event)
-                payload["hops_n"] = hops_n
+                if frame is None:
+                    payload["hops_n"] = hops_n
                 self._publish("msg/dm", payload)
             else:
                 slot = self._channels.get(msg.channel_idx)
@@ -254,10 +277,74 @@ class ObserverPublisher:
                 # The sender is already embedded in the on-air text as
                 # "<sender>: <message>", so nothing is prepended here.
                 payload = build_channel_message(event)
-                payload["hops_n"] = hops_n
+                if frame is None:
+                    payload["hops_n"] = hops_n
                 self._publish("msg/channel", payload)
         except Exception as exc:
             logger.error("message mirror failed: %s", exc, exc_info=True)
+
+    def _remember_text_frame(self, raw: bytes, snr: float) -> None:
+        """Keep a TXT_MSG / GRP_TXT frame until its decoded message arrives."""
+        hdr = decode_frame_header(raw)
+        if hdr is None or hdr["payload_type"] not in (PAYLOAD_TYPE_TXT_MSG, PAYLOAD_TYPE_GRP_TXT):
+            return
+        payload = hdr["payload"]
+        # GRP_TXT: channel_hash(1) | mac(2) | cipher.  TXT_MSG: dest(1) src(1) | mac(2) | cipher.
+        lead = 1 if hdr["payload_type"] == PAYLOAD_TYPE_GRP_TXT else 2
+        if len(payload) < lead + CIPHER_MAC:
+            return
+        self._text_frames.append(
+            {
+                "t": time.monotonic(),
+                "type": hdr["payload_type"],
+                "path_len": hdr["path_len"],
+                "path": hdr["path"],
+                "hash_size": hdr["hash_size"],
+                "lead": bytes(payload[:lead]),
+                "cipher_len": len(payload) - lead - CIPHER_MAC,
+                "snr": snr,
+            }
+        )
+        while len(self._text_frames) > _TEXT_FRAME_MAX:
+            self._text_frames.popleft()
+
+    def _claim_text_frame(self, msg: Message) -> Optional[dict]:
+        """Find the logged frame a decoded message came from, and consume it.
+
+        There is no message id on either side, so the match is structural:
+        same payload type (channel vs direct), the same path_len byte, a
+        ciphertext exactly as long as this text encrypts to, and -- when it
+        can be known -- the same channel hash (from the slot's key) or the
+        same source hash (the sender prefix's first byte). The oldest frame
+        that passes is the copy the node decoded; later ones are relay
+        duplicates, which stay cached until they age out. A miss returns
+        None rather than a guess.
+        """
+        now = time.monotonic()
+        while self._text_frames and now - self._text_frames[0]["t"] > _TEXT_FRAME_MAX_AGE_S:
+            self._text_frames.popleft()
+
+        is_channel = msg.channel_idx is not None
+        want_type = PAYLOAD_TYPE_GRP_TXT if is_channel else PAYLOAD_TYPE_TXT_MSG
+        lengths = text_cipher_lengths(len(msg.text.encode("utf-8")), trailing_nul=not is_channel)
+        want_lead: Optional[int] = None
+        if is_channel:
+            want_lead = self._channel_hashes.get(msg.channel_idx)
+        elif msg.sender_prefix:
+            want_lead = msg.sender_prefix[0]
+
+        for i, frame in enumerate(self._text_frames):
+            if frame["type"] != want_type or frame["path_len"] != msg.path_len:
+                continue
+            if frame["cipher_len"] not in lengths:
+                continue
+            if want_lead is not None:
+                lead_byte = frame["lead"][0] if is_channel else frame["lead"][1]
+                if lead_byte != want_lead:
+                    continue
+            del self._text_frames[i]
+            return frame
+        return None
 
     async def on_advert(self, advert: Advert) -> None:
         """PUSH_CODE_ADVERT: pubkey only, so it just notes that a node exists.
@@ -307,6 +394,11 @@ class ObserverPublisher:
         self._rx += 1
         self._last_snr = snr
         self._last_rssi = rssi
+
+        try:
+            self._remember_text_frame(raw, snr)
+        except Exception as exc:
+            logger.debug("text frame cache failed: %s", exc)
 
         try:
             decoded = decode_advert_frame(raw)

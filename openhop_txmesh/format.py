@@ -193,18 +193,23 @@ def normalise_advert(event: Mapping[str, Any]) -> Dict[str, Any]:
     }
 
 
-def hops_fields(path: Optional[Iterable[int]]) -> Dict[str, Any]:
+def hops_fields(path: Optional[Iterable[int]], hash_size: int = 1) -> Dict[str, Any]:
     """Build ``hops_n`` / ``hops`` from decoded path bytes (§4).
 
-    ``path`` is the raw MeshCore path: a sequence of 1-byte node hashes in
-    travel order. ``hops`` is omitted when heard direct, and ``hops_n`` is 0.
+    ``path`` is the raw MeshCore path: the node hashes in travel order, each
+    ``hash_size`` bytes wide (1, 2 or 3 -- uniform within one packet).
+    ``hops`` is the full-width chain as hex, so a 2-byte mesh publishes four
+    characters per hop, which is what the observer firmware publishes and what
+    txme.sh's path resolver expects. ``hops_n`` is the hop count, not the byte
+    count. ``hops`` is omitted when heard direct, and ``hops_n`` is 0.
     Callers must pass *decoded* values - the on-wire ``path_len`` packs the
     count into the low 6 bits and hash-size-1 into the top 2.
     """
     if not path:
         return {"hops_n": 0}
     raw = bytes(b & 0xFF for b in path)
-    return {"hops_n": len(raw), "hops": raw.hex()}
+    width = hash_size if hash_size in (1, 2, 3) else 1
+    return {"hops_n": len(raw) // width, "hops": raw.hex()}
 
 
 def _coord(value: Any) -> Optional[float]:
@@ -327,7 +332,7 @@ def build_heard(advert: Mapping[str, Any]) -> Dict[str, Any]:
             "name": advert.get("node_name") or advert.get("name"),
             "ts": int(advert.get("timestamp", 0)) or None,
             "snr": advert.get("snr"),
-            **hops_fields(advert.get("path")),
+            **hops_fields(advert.get("path"), advert.get("hash_size") or 1),
         }
     )
 
@@ -347,7 +352,7 @@ def build_dm(event: Mapping[str, Any], *, rx_ts: Optional[int] = None) -> Dict[s
             "from": event.get("contact_name") or event.get("sender_name"),
             "text": event.get("message_text", ""),
             "snr": net.get("snr"),
-            **hops_fields(event.get("path")),
+            **hops_fields(event.get("path"), event.get("hash_size") or 1),
             "sender_ts": sender_ts,
             "rx_ts": now,
             "skew_s": (now - sender_ts) if sender_ts else None,
@@ -378,7 +383,7 @@ def build_channel_message(
             "channel": event.get("channel_name") or "?",
             "text": text,
             "snr": net.get("snr"),
-            **hops_fields(event.get("path")),
+            **hops_fields(event.get("path"), event.get("hash_size") or 1),
             "sender_ts": sender_ts,
             "rx_ts": now,
             "skew_s": (now - sender_ts) if sender_ts else None,
@@ -406,7 +411,7 @@ def build_advert(advert: Mapping[str, Any], *, rx_ts: Optional[int] = None) -> D
             "type": contact_type(advert.get("contact_type")),
             "name": advert.get("node_name") or advert.get("name"),
             "snr": advert.get("snr"),
-            **hops_fields(advert.get("path")),
+            **hops_fields(advert.get("path"), advert.get("hash_size") or 1),
             "raw": advert.get("raw"),
         }
     )
@@ -582,6 +587,83 @@ def hashtag_secret(name: str) -> bytes:
 # Adverts are signed, not encrypted, so this needs no keys.
 
 _PAYLOAD_TYPE_ADVERT = 4
+PAYLOAD_TYPE_TXT_MSG = 2
+PAYLOAD_TYPE_GRP_TXT = 5
+
+# Header bits[1:0]. The two TRANSPORT_* routes carry 4 bytes of transport
+# codes between the header and path_len; the others do not.
+_ROUTE_TRANSPORT_FLOOD = 0
+_ROUTE_TRANSPORT_DIRECT = 3
+
+# Text payloads: AES-128-ECB over ts(4) | flags(1) | text, zero-padded to the
+# block, behind a 2-byte MAC (openhop_core.protocol.crypto, matching firmware).
+CIPHER_BLOCK = 16
+CIPHER_MAC = 2
+
+
+def decode_frame_header(raw: bytes) -> Optional[Dict[str, Any]]:
+    """Split an on-wire frame into header fields, path and payload.
+
+    Layout: ``header(1) | [transport codes(4)] | path_len(1) | path | payload``
+    where ``path_len`` packs ``hash_count`` into bits[5:0] and ``hash_size-1``
+    into bits[7:6]. ``path`` is returned at full width: a 2-byte mesh gives
+    two bytes per hop. Returns None for a frame too short to hold its header.
+    """
+    if len(raw) < 2:
+        return None
+    header = raw[0]
+    route = header & 0x03
+    payload_type = (header >> 2) & 0x0F
+    pos = 1
+    if route in (_ROUTE_TRANSPORT_FLOOD, _ROUTE_TRANSPORT_DIRECT):
+        pos += 4
+    if len(raw) <= pos:
+        return None
+    path_len = raw[pos]
+    hash_size = (path_len >> 6) + 1
+    hop_count = path_len & 0x3F
+    start = pos + 1
+    end = start + hop_count * hash_size
+    if len(raw) < end:
+        return None
+    return {
+        "route": route,
+        "payload_type": payload_type,
+        "path_len": path_len,
+        "hash_size": hash_size,
+        "hop_count": hop_count,
+        "path": bytes(raw[start:end]),
+        "payload": bytes(raw[end:]),
+    }
+
+
+def channel_hash_byte(secret: bytes) -> int:
+    """The 1-byte channel hash a GRP_TXT payload starts with.
+
+    Mirrors openhop_core's PacketBuilder / GroupTextHandler: sha256 of the
+    key material, where a 32-byte key whose second half is zero hashes as
+    its first 16 bytes.
+    """
+    import hashlib
+
+    key = bytes(secret)
+    if len(key) >= 32 and key[16:32] == b"\x00" * 16:
+        material = key[:16]
+    else:
+        material = key[:32] if len(key) > 32 else key
+    return hashlib.sha256(material).digest()[0]
+
+
+def text_cipher_lengths(text_bytes: int, trailing_nul: bool = False) -> range:
+    """Ciphertext lengths a text of ``text_bytes`` bytes can encrypt to.
+
+    Plaintext is ts(4) | flags(1) | text, and openhop_core appends a NUL to a
+    direct message that firmware may not, so the range spans both.
+    """
+    lo = -(-(5 + text_bytes) // CIPHER_BLOCK) * CIPHER_BLOCK
+    hi = -(-(6 + text_bytes) // CIPHER_BLOCK) * CIPHER_BLOCK if trailing_nul else lo
+    return range(lo, hi + 1, CIPHER_BLOCK)
+
 
 _ADV_FLAG_TYPE = 0x0F
 _ADV_FLAG_HAS_LATLON = 0x10
@@ -636,20 +718,11 @@ def decode_advert_frame(raw: bytes, *, verify: bool = True) -> Optional[Dict[str
     The timestamp's absolute offset shifts with hop count, which is why the
     path has to be measured rather than assumed.
     """
-    if len(raw) < 3:
+    hdr = decode_frame_header(raw)
+    if hdr is None or hdr["payload_type"] != _PAYLOAD_TYPE_ADVERT:
         return None
 
-    header = raw[0]
-    if (header >> 2) & 0x0F != _PAYLOAD_TYPE_ADVERT:
-        return None
-
-    path_len = raw[1]
-    hash_size = (path_len >> 6) + 1
-    hash_count = path_len & 0x3F
-    path_bytes = hash_count * hash_size
-
-    start = 2 + path_bytes
-    body = raw[start:]
+    body = hdr["payload"]
     if len(body) < 101:
         return None
 
@@ -664,9 +737,11 @@ def decode_advert_frame(raw: bytes, *, verify: bool = True) -> Optional[Dict[str
         "pubkey": pubkey,
         "contact_type": _ADV_TYPE_BY_ID.get(flags & _ADV_FLAG_TYPE, "unknown"),
         "timestamp": timestamp,
-        # Only the leading byte of each hop hash is the node hash the contract
-        # publishes; a larger hash_size means the extra bytes are padding here.
-        "path": bytes(raw[2 + i * hash_size] for i in range(hash_count)),
+        # Full-width hop hashes, in travel order. On a 2-byte mesh each hop
+        # is two bytes of the relay's pubkey; truncating to one byte would
+        # publish a chain txme.sh cannot resolve.
+        "path": hdr["path"],
+        "hash_size": hdr["hash_size"],
         "raw": raw.hex(),
     }
 

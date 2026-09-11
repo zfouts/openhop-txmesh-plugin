@@ -7,6 +7,7 @@ payloads, so these exercise it through the same surface the real
 """
 
 import asyncio
+from collections import deque
 
 import pytest
 
@@ -355,3 +356,119 @@ def test_battery_mv_string_from_env_is_coerced():
     pub._publish = lambda s, p, retain=False: out.append(p)
     asyncio.run(pub.tick_telemetry())
     assert out[0]["batt_mv"] == 4600 and out[0]["batt_pct"] == 100
+
+
+# ---------------------------------------------------------------- msg/* hop paths
+
+
+def _grp_txt_frame(path: bytes, hash_size: int, channel_hash: int, text_len: int) -> bytes:
+    """A GRP_TXT frame as LOG_RX_DATA hands it over, ciphertext sized for text_len."""
+    from openhop_txmesh.format import PAYLOAD_TYPE_GRP_TXT, text_cipher_lengths
+
+    header = (PAYLOAD_TYPE_GRP_TXT << 2) | 0x01  # flood
+    path_len = ((hash_size - 1) << 6) | (len(path) // hash_size)
+    cipher = b"\xee" * list(text_cipher_lengths(text_len))[0]
+    return bytes([header, path_len]) + path + bytes([channel_hash]) + b"\x00\x00" + cipher
+
+
+def _txt_msg_frame(path: bytes, dest: int, src: int, text_len: int) -> bytes:
+    from openhop_txmesh.format import PAYLOAD_TYPE_TXT_MSG, text_cipher_lengths
+
+    header = (PAYLOAD_TYPE_TXT_MSG << 2) | 0x02  # direct
+    cipher = b"\xee" * list(text_cipher_lengths(text_len, trailing_nul=True))[-1]
+    return bytes([header, len(path)]) + path + bytes([dest, src]) + b"\x00\x00" + cipher
+
+
+def _bot_hash():
+    from openhop_txmesh.format import channel_hash_byte, hashtag_secret
+
+    return channel_hash_byte(hashtag_secret("#bot"))
+
+
+def test_channel_message_carries_full_width_hops_from_logged_frame(pub):
+    """The !path bot needs the hop chain; the sync frame only has the count."""
+    publisher, client, published = pub
+    publisher.config = {**publisher.config, "channels": [{"idx": 3, "name": "#bot"}]}
+    asyncio.run(publisher.on_companion_connected())
+    text = "KJ5DHR: !path"
+    path = bytes.fromhex("8175b535fee7")  # three 2-byte hops
+    asyncio.run(publisher.on_raw_frame(_grp_txt_frame(path, 2, _bot_hash(), len(text)), 8.0, -90))
+    asyncio.run(
+        publisher.on_message(Message(text=text, timestamp=1, snr=8.0, path_len=0x43, channel_idx=3))
+    )
+    msgs = [p for t, p, _ in published if t == "msg/channel"]
+    assert msgs[-1]["hops_n"] == 3
+    assert msgs[-1]["hops"] == "8175b535fee7"
+    assert publisher._text_frames == deque()  # claimed, not reusable
+
+
+def test_channel_message_without_a_matching_frame_keeps_hops_n_only(pub):
+    publisher, client, published = pub
+    publisher.config = {**publisher.config, "channels": [{"idx": 3, "name": "#bot"}]}
+    asyncio.run(publisher.on_companion_connected())
+    text = "KJ5DHR: !path"
+    # wrong channel hash, wrong path_len, wrong ciphertext length: none may be claimed
+    asyncio.run(publisher.on_raw_frame(_grp_txt_frame(b"\xdd\x17", 1, _bot_hash() ^ 0xFF, len(text)), 8.0, -90))
+    asyncio.run(publisher.on_raw_frame(_grp_txt_frame(b"\xdd\x17\x21", 1, _bot_hash(), len(text)), 8.0, -90))
+    asyncio.run(publisher.on_raw_frame(_grp_txt_frame(b"\xdd\x17", 1, _bot_hash(), len(text) + 40), 8.0, -90))
+    asyncio.run(
+        publisher.on_message(Message(text=text, timestamp=1, snr=8.0, path_len=2, channel_idx=3))
+    )
+    msg = [p for t, p, _ in published if t == "msg/channel"][-1]
+    assert msg["hops_n"] == 2
+    assert "hops" not in msg
+    assert len(publisher._text_frames) == 3
+
+
+def test_oldest_matching_frame_wins_and_relay_copies_stay(pub):
+    """The node decodes the first copy heard; later copies are relay duplicates."""
+    publisher, client, published = pub
+    publisher.config = {**publisher.config, "channels": [{"idx": 3, "name": "#bot"}]}
+    asyncio.run(publisher.on_companion_connected())
+    text = "KJ5DHR: hi all"
+    asyncio.run(publisher.on_raw_frame(_grp_txt_frame(b"\xdd\x17", 1, _bot_hash(), len(text)), 8.0, -90))
+    asyncio.run(publisher.on_raw_frame(_grp_txt_frame(b"\x6f\xaf", 1, _bot_hash(), len(text)), 8.0, -90))
+    asyncio.run(
+        publisher.on_message(Message(text=text, timestamp=1, snr=8.0, path_len=2, channel_idx=3))
+    )
+    msg = [p for t, p, _ in published if t == "msg/channel"][-1]
+    assert msg["hops"] == "dd17"
+    assert len(publisher._text_frames) == 1
+
+
+def test_dm_hops_match_on_sender_hash(pub):
+    publisher, client, published = pub
+    text = "hello"
+    sender = bytes.fromhex("a1b2c3d4e5f6")
+    asyncio.run(publisher.on_raw_frame(_txt_msg_frame(b"\x17", 0x42, 0x99, len(text)), 8.0, -90))
+    asyncio.run(publisher.on_raw_frame(_txt_msg_frame(b"\xdd", 0x42, sender[0], len(text)), 8.0, -90))
+    asyncio.run(
+        publisher.on_message(
+            Message(text=text, timestamp=1, snr=8.0, path_len=1, sender_prefix=sender, channel_idx=None)
+        )
+    )
+    msg = [p for t, p, _ in published if t == "msg/dm"][-1]
+    assert msg["hops_n"] == 1 and msg["hops"] == "dd"
+
+
+def test_stale_frames_are_not_claimed(pub, monkeypatch):
+    import openhop_txmesh.publisher as mod
+
+    publisher, client, published = pub
+    publisher.config = {**publisher.config, "channels": [{"idx": 3, "name": "#bot"}]}
+    asyncio.run(publisher.on_companion_connected())
+    text = "KJ5DHR: !path"
+    asyncio.run(publisher.on_raw_frame(_grp_txt_frame(b"\xdd\x17", 1, _bot_hash(), len(text)), 8.0, -90))
+    publisher._text_frames[0]["t"] -= mod._TEXT_FRAME_MAX_AGE_S + 1
+    asyncio.run(
+        publisher.on_message(Message(text=text, timestamp=1, snr=8.0, path_len=2, channel_idx=3))
+    )
+    msg = [p for t, p, _ in published if t == "msg/channel"][-1]
+    assert "hops" not in msg
+    assert not publisher._text_frames
+
+
+def test_non_text_frames_are_not_cached(pub):
+    publisher, client, published = pub
+    asyncio.run(publisher.on_raw_frame(bytes([0x08 << 2 | 1, 0x01, 0xdd, 0x11, 0x22]), 8.0, -90))  # PATH
+    assert not publisher._text_frames

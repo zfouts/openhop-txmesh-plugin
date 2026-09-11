@@ -135,8 +135,8 @@ setting is described in [docs/CONFIGURATION.md](docs/CONFIGURATION.md).
 | `contact/<pk8>` | yes | every 300 s: the companion's contact table, published in slices |
 | `heard/<pk8>` | yes | every 180 s: the 16 most recently heard nodes, with SNR and hop path |
 | `msg/dm`, `msg/channel` | no | as they arrive: every message the companion can read |
-| `advert` | no | opt-in: one per advert heard, with the raw frame |
-| `packets` | no | opt-in: one per frame heard, by far the highest volume |
+| `advert` | no | one per advert heard, with the raw frame. `advert_dump: false` turns it off |
+| `packets` | no | one per frame heard, by far the highest volume. `!mpath` is built from it. `packets: false` turns it off |
 | `send/<idx\|name>` | n/a | subscribed. Publish text here and the node transmits it |
 
 `<pk8>` is the first 4 bytes of a node's public key as 8 hex characters.
@@ -152,9 +152,16 @@ path. That frame arrives before the repeater has verified it, so the plugin
 checks the Ed25519 signature itself and discards forgeries. Nobody on air can
 plant a fake name or position under a real node's key.
 
-`msg/*` carries `hops_n` but not `hops`. The message frame has the hop count,
-not the hop hashes. It leaves out `snr` when the frame's SNR byte is zero,
-because that is indistinguishable from "not set".
+`msg/*` carries `hops` as well as `hops_n`. The companion's message frame has
+only the hop count, so the plugin keeps the raw text frames the radio logged
+and, when the decoded message arrives, claims the one it came from: same
+payload type, same path byte, ciphertext the exact length that text encrypts
+to, and the channel hash or sender hash where known. That chain is what
+txme.sh's `!path` bot traces; without it the request looks direct and the bot
+stays silent. When no logged frame matches, `hops_n` is published alone rather
+than a guessed chain. Hop hashes are published at the width the mesh uses, so a
+2-byte mesh gives four hex characters per hop. `msg/*` leaves out `snr` when
+the frame's SNR byte is zero, because that is indistinguishable from "not set".
 
 `packets` raw frames are capped at 170 bytes by the companion frame protocol.
 

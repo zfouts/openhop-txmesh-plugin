@@ -43,8 +43,8 @@ delete what you do not need.
   ],
 
   "battery_mv": null,
-  "advert_dump": false,
-  "packets": false,
+  "advert_dump": true,
+  "packets": true,
   "log_level": "INFO"
 }
 ```
@@ -147,12 +147,17 @@ has started.
 
 ---
 
-## Extra feeds, off by default
+## Extra feeds
+
+Both are on by default because txme.sh uses them: adverts feed the clock and
+position pages, and `!mpath` draws the same packet as every gateway heard it
+from the `packets` feed. Turn them off only for a collector that does not
+want them.
 
 | Key | Default | Env var | What it is |
 |---|---|---|---|
-| `advert_dump` | `false` | `OPENHOP_TXMESH_ADVERT_DUMP` | Publish every node announcement your radio hears, including the raw bytes. Useful for diagnosing nodes with a wrong clock. |
-| `packets` | `false` | `OPENHOP_TXMESH_PACKETS` | Publish every single frame your radio hears. This is by far the most traffic the plugin can generate. Turn it on only if you know you want it. |
+| `advert_dump` | `true` | `OPENHOP_TXMESH_ADVERT_DUMP` | Publish every node announcement your radio hears, including the raw bytes. Useful for diagnosing nodes with a wrong clock. |
+| `packets` | `true` | `OPENHOP_TXMESH_PACKETS` | Publish every single frame your radio hears. This is by far the most traffic the plugin can generate, but it is only upload bandwidth, never airtime. |
 
 ---
 

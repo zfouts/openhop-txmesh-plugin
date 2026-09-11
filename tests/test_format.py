@@ -361,3 +361,55 @@ def test_rate_limiter_enforces_budget_then_recovers():
     assert all(rl.allow(t) for _ in range(6))
     assert rl.allow(t) is False  # over budget
     assert rl.allow(t + 61) is True  # next window
+
+
+# ---------------------------------------------------------------- frame header / hop width
+
+
+def test_hops_keep_full_width_on_a_two_byte_mesh():
+    """Six hops on a 2-byte mesh is 24 hex chars, as the observer firmware publishes."""
+    assert hops_fields(bytes.fromhex("8175b535fee7faf01ee96faf"), 2) == {
+        "hops_n": 6,
+        "hops": "8175b535fee7faf01ee96faf",
+    }
+
+
+def test_decode_frame_header_two_byte_hashes_and_transport_codes():
+    from openhop_txmesh.format import decode_frame_header
+
+    # GRP_TXT (5), flood route (1): header = 0b000101_01
+    raw = bytes([0x15, 0x42]) + bytes.fromhex("8175b535") + b"payload"
+    h = decode_frame_header(raw)
+    assert h["payload_type"] == 5 and h["hash_size"] == 2 and h["hop_count"] == 2
+    assert h["path"] == bytes.fromhex("8175b535") and h["payload"] == b"payload"
+
+    # transport flood (route 0) carries 4 transport-code bytes before path_len
+    raw_t = bytes([0x14]) + b"\x01\x02\x03\x04" + bytes([0x01, 0xdd]) + b"x"
+    h = decode_frame_header(raw_t)
+    assert h["path"] == b"\xdd" and h["payload"] == b"x"
+
+    assert decode_frame_header(bytes([0x15, 0x42, 0x81])) is None  # truncated path
+
+
+def test_advert_decode_keeps_two_byte_hop_hashes():
+    from openhop_txmesh.format import decode_advert_frame
+
+    body = bytes(32) + bytes(4) + bytes(64) + bytes([0x80]) + b"Nodey"
+    raw = bytes([0x11, 0x42]) + bytes.fromhex("8175b535") + body
+    a = decode_advert_frame(raw, verify=False)
+    assert a["path"] == bytes.fromhex("8175b535") and a["hash_size"] == 2
+    assert build_heard(a)["hops"] == "8175b535" and build_heard(a)["hops_n"] == 2
+
+
+def test_channel_hash_matches_openhop_core():
+    from openhop_txmesh.format import channel_hash_byte, hashtag_secret
+
+    try:
+        from openhop_core.protocol.packet_builder import PacketBuilder
+        from openhop_core.protocol.packet import Packet  # noqa: F401
+    except Exception:  # pragma: no cover - core not installed
+        return
+    channels = [{"name": "#bot", "secret": hashtag_secret("#bot")}]
+    pkt = PacketBuilder.create_group_datagram("#bot", None, "hi", "me", channels)
+    pkt = pkt[0] if isinstance(pkt, tuple) else pkt
+    assert pkt.payload[0] == channel_hash_byte(hashtag_secret("#bot"))

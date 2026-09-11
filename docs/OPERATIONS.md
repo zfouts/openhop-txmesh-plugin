@@ -48,8 +48,8 @@ Everything lands under `meshcore/YOUR-USERNAME/YOUR-NODE-NAME/`.
 | `contact/<id>` | yes | every 5 min | one saved message per node your node knows |
 | `heard/<id>` | yes | every 3 min | up to 16 saved messages |
 | `msg/dm`, `msg/channel` | no | as messages arrive | one per message your node can read |
-| `advert` | no | as announcements arrive | off by default |
-| `packets` | no | every frame | off by default, and the big one |
+| `advert` | no | as announcements arrive | one small message per announcement |
+| `packets` | no | every frame | the big one: every frame heard, needed for `!mpath` |
 
 `<id>` is the first 8 hex characters of a node's public key.
 
