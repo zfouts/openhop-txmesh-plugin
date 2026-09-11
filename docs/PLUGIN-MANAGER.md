@@ -161,7 +161,7 @@ AUTH="Authorization: Bearer $TOKEN"
 
 # install from a wheel on the repeater host
 curl -s -X POST $R/api/plugins/install -H "$AUTH" -H 'Content-Type: application/json' \
-  -d '{"wheel_path":"/tmp/openhop_txmesh_plugin-0.1.2-py3-none-any.whl"}'
+  -d '{"wheel_path":"/tmp/openhop_txmesh_plugin-0.1.3-py3-none-any.whl"}'
 
 # settings
 curl -s -X POST $R/api/plugins/settings -H "$AUTH" -H 'Content-Type: application/json' \

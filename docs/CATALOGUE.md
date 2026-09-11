@@ -11,7 +11,7 @@ catalogue validator checks.
 
 | Requirement | How this repository meets it |
 |---|---|
-| Tag `v<version>` | `git tag -a v0.1.2` on the commit to build |
+| Tag `v<version>` | `git tag -a v0.1.3` on the commit to build |
 | `version` in `pyproject.toml` and `openhop-plugin.json` equal the tag | CI fails the tag build if they differ |
 | Release asset `openhop_txmesh_plugin-<version>-py3-none-any.whl` | built by `python -m build --wheel` and attached by CI |
 | Lowercase SHA-256 of that exact asset | CI attaches `<wheel>.sha256` next to the wheel |
@@ -25,8 +25,8 @@ catalogue validator checks.
 2. Commit, then tag and push:
 
    ```bash
-   git tag -a v0.1.2 -m "v0.1.2"
-   git push origin main v0.1.2
+   git tag -a v0.1.3 -m "v0.1.3"
+   git push origin main v0.1.3
    ```
 
 3. The **Build Wheel** workflow runs the tests, builds the wheel, checks the
@@ -45,8 +45,8 @@ accept, and a rebuilt wheel will not match.
 2. Confirm the digest against the published asset:
 
    ```bash
-   curl -sLO https://github.com/zfouts/openhop-txmesh-plugin/releases/download/v0.1.2/openhop_txmesh_plugin-0.1.2-py3-none-any.whl
-   shasum -a 256 openhop_txmesh_plugin-0.1.2-py3-none-any.whl
+   curl -sLO https://github.com/zfouts/openhop-txmesh-plugin/releases/download/v0.1.3/openhop_txmesh_plugin-0.1.3-py3-none-any.whl
+   shasum -a 256 openhop_txmesh_plugin-0.1.3-py3-none-any.whl
    ```
 
 3. In a fork of the catalogue, replace this plugin's object in
@@ -62,7 +62,7 @@ manifest and `pyproject.toml`, hashes the wheel you pass it, and uses
 
 ```bash
 python -m build --wheel
-python scripts/catalogue_entry.py dist/openhop_txmesh_plugin-0.1.2-py3-none-any.whl
+python scripts/catalogue_entry.py dist/openhop_txmesh_plugin-0.1.3-py3-none-any.whl
 ```
 
 Only an entry generated from the CI-built wheel should be submitted, for the
