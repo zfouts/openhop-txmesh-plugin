@@ -34,6 +34,7 @@ more identity. No dedicated hardware, nothing to flash or keep updated.
 | [docs/SETUP.md](docs/SETUP.md) | Manual install for older repeaters or a separate machine. Copy-and-paste setup from beginning to end, with what you should see after each step. |
 | [docs/CONFIGURATION.md](docs/CONFIGURATION.md) | Every setting, its default, and its environment variable. |
 | [docs/OPERATIONS.md](docs/OPERATIONS.md) | What it publishes, privacy, transmit limits, troubleshooting, and how to shut a node down cleanly. |
+| [docs/CATALOGUE.md](docs/CATALOGUE.md) | How releases are cut and how a version gets proposed to the openHop plugin catalogue. |
 
 ## How it fits
 

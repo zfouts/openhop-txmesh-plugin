@@ -69,11 +69,36 @@ jobs:
           fi
           ls dist/*-"${want}"-py3-none-any.whl
 
+      - name: Write SHA-256 digest and catalogue entry
+        shell: bash
+        run: |
+          cd dist
+          wheel=$(ls *.whl)
+          sha256sum "${wheel}" > "${wheel}.sha256"
+          cd ..
+          python scripts/catalogue_entry.py "dist/${wheel}" > dist/catalogue-entry.json
+          {
+            echo "## Wheel"
+            echo
+            echo '```'
+            cat "dist/${wheel}.sha256"
+            echo '```'
+            echo
+            echo "## openHop plugin catalogue entry"
+            echo
+            echo '```json'
+            cat dist/catalogue-entry.json
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
       - name: Upload workflow artifact
         uses: actions/upload-artifact@v4
         with:
           name: openhop-txmesh-plugin-wheel
-          path: dist/*.whl
+          path: |
+            dist/*.whl
+            dist/*.sha256
+            dist/catalogue-entry.json
           if-no-files-found: error
 
       - name: Attach wheel to GitHub Release
@@ -82,4 +107,7 @@ jobs:
         with:
           tag_name: ${{ steps.release.outputs.tag }}
           generate_release_notes: true
-          files: dist/*.whl
+          files: |
+            dist/*.whl
+            dist/*.sha256
+            dist/catalogue-entry.json
